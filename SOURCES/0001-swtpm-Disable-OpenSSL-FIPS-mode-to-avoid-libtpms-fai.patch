@@ -1,0 +1,279 @@
+From a39c3792ba5677f25fea903b9f1a43740a5f2c0c Mon Sep 17 00:00:00 2001
+From: Stefan Berger <stefanb@linux.ibm.com>
+Date: Wed, 8 Jun 2022 09:19:07 -0400
+Subject: [PATCH] swtpm: Disable OpenSSL FIPS mode to avoid libtpms failures
+
+While libtpms does not provide any means to disable FIPS-disabled crypto
+algorithms from being used, work around the issue by simply disabling the
+FIPS mode of OpenSSL if it is enabled. If it cannot be disabled, exit
+swtpm with a failure message that it cannot be disabled. If FIPS mode
+was successfully disabled, print out a message as well.
+
+Buglink: https://bugzilla.redhat.com/show_bug.cgi?id=2090219
+Signed-off-by: Stefan Berger <stefanb@linux.ibm.com>
+---
+ configure.ac              |   9 ++++
+ src/swtpm/Makefile.am     |   2 +
+ src/swtpm/cuse_tpm.c      |   5 ++
+ src/swtpm/fips.c          | 100 ++++++++++++++++++++++++++++++++++++++
+ src/swtpm/fips.h          |  43 ++++++++++++++++
+ src/swtpm/swtpm.c         |   3 ++
+ src/swtpm/swtpm_chardev.c |   3 ++
+ src/swtpm/utils.h         |   2 +
+ 8 files changed, 167 insertions(+)
+ create mode 100644 src/swtpm/fips.c
+ create mode 100644 src/swtpm/fips.h
+
+diff --git a/configure.ac b/configure.ac
+index ad3054e..30288c7 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -156,6 +156,15 @@ openssl)
+ 	AC_MSG_RESULT([Building with openssl crypto library])
+ 	LIBCRYPTO_LIBS=$(pkg-config --libs libcrypto)
+ 	AC_SUBST([LIBCRYPTO_LIBS])
++	AC_CHECK_HEADERS([openssl/fips.h],
++	                 [AC_DEFINE_UNQUOTED([HAVE_OPENSSL_FIPS_H], 1,
++	                                     [whether openssl/fips.h is available])]
++	                 )
++	AC_CHECK_LIB(crypto,
++		     [FIPS_mode_set],
++		     [AC_DEFINE_UNQUOTED([HAVE_OPENSSL_FIPS_MODE_SET_API], 1,
++		                         [whether FIPS_mode_set API is available])]
++		     )
+ 	;;
+ esac
+ 
+diff --git a/src/swtpm/Makefile.am b/src/swtpm/Makefile.am
+index 5454a6f..2a65950 100644
+--- a/src/swtpm/Makefile.am
++++ b/src/swtpm/Makefile.am
+@@ -11,6 +11,7 @@ noinst_HEADERS = \
+ 	capabilities.h \
+ 	common.h \
+ 	ctrlchannel.h \
++	fips.h \
+ 	key.h \
+ 	locality.h \
+ 	logging.h \
+@@ -40,6 +41,7 @@ libswtpm_libtpms_la_SOURCES = \
+ 	capabilities.c \
+ 	common.c \
+ 	ctrlchannel.c \
++	fips.c \
+ 	key.c \
+ 	logging.c \
+ 	mainloop.c \
+diff --git a/src/swtpm/cuse_tpm.c b/src/swtpm/cuse_tpm.c
+index 9dbc00d..3026e26 100644
+--- a/src/swtpm/cuse_tpm.c
++++ b/src/swtpm/cuse_tpm.c
+@@ -1695,6 +1695,11 @@ int swtpm_cuse_main(int argc, char **argv, const char *prgname, const char *ifac
+         goto exit;
+     }
+ 
++    if (disable_fips_mode() < 0) {
++        ret = -1;
++        goto exit;
++    }
++
+     if (tpmlib_register_callbacks(&cbs) != TPM_SUCCESS) {
+         ret = -1;
+         goto exit;
+diff --git a/src/swtpm/fips.c b/src/swtpm/fips.c
+new file mode 100644
+index 0000000..eeb2a0c
+--- /dev/null
++++ b/src/swtpm/fips.c
+@@ -0,0 +1,100 @@
++/*
++ * fips.c -- FIPS mode related functions
++ *
++ * (c) Copyright IBM Corporation 2022.
++ *
++ * Author: Stefan Berger <stefanb@us.ibm.com>
++ *
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are
++ * met:
++ *
++ * Redistributions of source code must retain the above copyright notice,
++ * this list of conditions and the following disclaimer.
++ *
++ * Redistributions in binary form must reproduce the above copyright
++ * notice, this list of conditions and the following disclaimer in the
++ * documentation and/or other materials provided with the distribution.
++ *
++ * Neither the names of the IBM Corporation nor the names of its
++ * contributors may be used to endorse or promote products derived from
++ * this software without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
++ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
++ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
++ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
++ * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
++ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
++ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++
++#include "fips.h"
++#include "logging.h"
++
++#if defined(HAVE_OPENSSL_FIPS_H)
++# include <openssl/fips.h>
++#elif defined(HAVE_OPENSSL_FIPS_MODE_SET_API)
++/* Cygwin has no fips.h but API exists */
++extern int FIPS_mode(void);
++extern int FIPS_mode_set(int);
++#endif
++
++#if OPENSSL_VERSION_NUMBER >= 0x30000000L
++# include <openssl/evp.h>
++#endif
++
++#include <openssl/err.h>
++
++/*
++ * disable_fips_mode: If possible, disable FIPS mode to avoid libtpms failures
++ *
++ * While libtpms does not provide a solution to disable deactivated algorithms
++ * avoid libtpms failures due to FIPS mode enablement by disabling FIPS mode.
++ *
++ * Returns < 0 on error, 0 otherwise.
++ */
++#if defined(HAVE_OPENSSL_FIPS_H) || defined(HAVE_OPENSSL_FIPS_MODE_SET_API)
++int disable_fips_mode(void)
++{
++#if OPENSSL_VERSION_NUMBER >= 0x30000000L
++    int mode = EVP_default_properties_is_fips_enabled(NULL);
++#else
++    int mode = FIPS_mode();
++#endif
++    int ret = 0;
++
++    if (mode != 0) {
++#if OPENSSL_VERSION_NUMBER >= 0x30000000L
++        int rc = EVP_default_properties_enable_fips(NULL, 0);
++#else
++        int rc = FIPS_mode_set(0);
++#endif
++        if (rc == 1) {
++            logprintf(STDOUT_FILENO,
++                      "Warning: Disabled OpenSSL FIPS mode\n");
++        } else {
++            unsigned long err = ERR_get_error();
++            logprintf(STDERR_FILENO,
++                      "Failed to disable OpenSSL FIPS mode: %s\n",
++                      ERR_error_string(err, NULL));
++            ret = -1;
++        }
++    }
++    return ret;
++}
++#else
++/* OpenBSD & DragonFlyBSD case */
++int disable_fips_mode(void)
++{
++    return 0;
++}
++#endif
+diff --git a/src/swtpm/fips.h b/src/swtpm/fips.h
+new file mode 100644
+index 0000000..14d4e9f
+--- /dev/null
++++ b/src/swtpm/fips.h
+@@ -0,0 +1,43 @@
++/*
++ * fips.h -- FIPS mode related functions
++ *
++ * (c) Copyright IBM Corporation 2015.
++ *
++ * Author: Stefan Berger <stefanb@us.ibm.com>
++ *
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are
++ * met:
++ *
++ * Redistributions of source code must retain the above copyright notice,
++ * this list of conditions and the following disclaimer.
++ *
++ * Redistributions in binary form must reproduce the above copyright
++ * notice, this list of conditions and the following disclaimer in the
++ * documentation and/or other materials provided with the distribution.
++ *
++ * Neither the names of the IBM Corporation nor the names of its
++ * contributors may be used to endorse or promote products derived from
++ * this software without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
++ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
++ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
++ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
++ * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
++ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
++ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#ifndef _SWTPM_UTILS_H_
++#define _SWTPM_UTILS_H_
++
++int disable_fips_mode(void);
++
++#endif /* _SWTPM_UTILS_H_ */
+diff --git a/src/swtpm/swtpm.c b/src/swtpm/swtpm.c
+index 722a743..e618c56 100644
+--- a/src/swtpm/swtpm.c
++++ b/src/swtpm/swtpm.c
+@@ -521,6 +521,9 @@ int swtpm_main(int argc, char **argv, const char *prgname, const char *iface)
+         daemonize_finish();
+     }
+ 
++    if (disable_fips_mode() < 0)
++        goto error_seccomp_profile;
++
+     rc = mainLoop(&mlp, notify_fd[0]);
+ 
+ error_seccomp_profile:
+diff --git a/src/swtpm/swtpm_chardev.c b/src/swtpm/swtpm_chardev.c
+index 9710927..ab6d8fd 100644
+--- a/src/swtpm/swtpm_chardev.c
++++ b/src/swtpm/swtpm_chardev.c
+@@ -573,6 +573,9 @@ int swtpm_chardev_main(int argc, char **argv, const char *prgname, const char *i
+         daemonize_finish();
+     }
+ 
++    if (disable_fips_mode() < 0)
++        goto error_seccomp_profile;
++
+     rc = mainLoop(&mlp, notify_fd[0]);
+ 
+ error_seccomp_profile:
+diff --git a/src/swtpm/utils.h b/src/swtpm/utils.h
+index 7502442..b8acd89 100644
+--- a/src/swtpm/utils.h
++++ b/src/swtpm/utils.h
+@@ -71,4 +71,6 @@ ssize_t writev_full(int fd, const struct iovec *iov, int iovcnt);
+ 
+ ssize_t read_eintr(int fd, void *buffer, size_t buflen);
+ 
++int disable_fips_mode(void);
++
+ #endif /* _SWTPM_UTILS_H_ */
+-- 
+2.36.1
+
