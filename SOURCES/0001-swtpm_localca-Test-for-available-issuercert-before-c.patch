@@ -1,0 +1,65 @@
+From b6b0611704047b8632b328d48502f3b3f9fe4fe2 Mon Sep 17 00:00:00 2001
+From: Stefan Berger <stefanb@linux.ibm.com>
+Date: Tue, 1 Feb 2022 12:40:06 -0500
+Subject: [PATCH] swtpm_localca: Test for available issuercert before creating
+ CA
+
+Avoid trying to create TPM certificates while the issuer certificate has
+not been created, yet (in a 2nd step).
+
+To resolve this do not just test for availability of the signing key, which
+is created first, but also test for the issuer certifcate, which is created
+in a 2nd step when the local CA is created. If either one is missing,
+attempt to create the CA.
+
+Resolves: https://github.com/stefanberger/swtpm/issues/644
+Signed-off-by: Stefan Berger <stefanb@linux.ibm.com>
+---
+ src/swtpm_localca/swtpm_localca.c | 17 ++++++++++++++++-
+ 1 file changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/src/swtpm_localca/swtpm_localca.c b/src/swtpm_localca/swtpm_localca.c
+index 037bfd5266bb..089e4e0db4ce 100644
+--- a/src/swtpm_localca/swtpm_localca.c
++++ b/src/swtpm_localca/swtpm_localca.c
+@@ -117,7 +117,7 @@ static int create_localca_cert(const gchar *lockfile, const gchar *statedir,
+             goto error;
+     }
+ 
+-    if (access(signkey, R_OK) != 0) {
++    if (access(signkey, R_OK) != 0 || access(issuercert, R_OK) != 0) {
+         g_autofree gchar *directory = g_path_get_dirname(signkey);
+         g_autofree gchar *cakey = g_strjoin(G_DIR_SEPARATOR_S, directory, "swtpm-localca-rootca-privkey.pem", NULL);
+         g_autofree gchar *cacert = g_strjoin(G_DIR_SEPARATOR_S, directory, "swtpm-localca-rootca-cert.pem", NULL);
+@@ -808,13 +808,28 @@ int main(int argc, char *argv[])
+         if (ret != 0)
+             goto error;
+     } else {
++        int create_certs = 0;
++
++        /* create certificate if either the signing key or issuer cert are missing */
+         if (access(signkey, R_OK) != 0) {
+             if (stat(signkey, &statbuf) == 0) {
+                 logerr(gl_LOGFILE, "Need read rights on signing key %s for user %s.\n",
+                        signkey, curr_user ? curr_user->pw_name : "<unknown>");
+                 goto error;
+             }
++            create_certs = 1;
++        }
++
++        if (access(issuercert, R_OK) != 0) {
++            if (stat(issuercert, &statbuf) == 0) {
++                logerr(gl_LOGFILE, "Need read rights on issuer certificate %s for user %s.\n",
++                       issuercert, curr_user ? curr_user->pw_name : "<unknown>");
++                goto error;
++            }
++            create_certs = 1;
++        }
+ 
++        if (create_certs) {
+             logit(gl_LOGFILE, "Creating root CA and a local CA's signing key and issuer cert.\n");
+             if (create_localca_cert(lockfile, statedir, signkey, signkey_password,
+                                     issuercert) != 0) {
+-- 
+2.37.0.rc0
+
