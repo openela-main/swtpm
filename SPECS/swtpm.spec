@@ -8,11 +8,16 @@
 Summary: TPM Emulator
 Name:           swtpm
 Version:        0.8.0
-Release:        1%{?dist}
+Release:        2%{?dist}
 License:        BSD
 Url:            https://github.com/stefanberger/swtpm
 Source0:        %{url}/archive/v%{version}/%{name}-%{version}.tar.gz
 Patch0001:      0001-swtpm_setup-fix-Werror-maybe-uninitialized.patch
+# Prevent crypto policies disabling SHA-1.
+# swtpm algorithm list is unconditional. Since it advertizes
+# SHA-1, we MUST always provide a working SHA-1 impl
+Source1:        openssl-swtpm.cnf
+Patch0002:      swtpm-custom-openssl.patch
 
 BuildRequires:  make
 BuildRequires:  git-core
@@ -103,6 +108,9 @@ make %{?_smp_mflags} check VERBOSE=1
 rm -f $RPM_BUILD_ROOT%{_libdir}/%{name}/*.{a,la,so}
 rm $RPM_BUILD_ROOT%{_mandir}/man8/swtpm_cuse.8*
 
+%__install -d %{buildroot}%{_sysconfdir}/ssl
+cp %{SOURCE1} %{buildroot}/%{_sysconfdir}/ssl/
+
 %post
 for pp in /usr/share/selinux/packages/swtpm.pp \
           /usr/share/selinux/packages/swtpm_svirt.pp; do
@@ -130,6 +138,7 @@ fi
 %{_mandir}/man8/swtpm.8*
 %{_datadir}/selinux/packages/swtpm.pp
 %{_datadir}/selinux/packages/swtpm_svirt.pp
+%{_sysconfdir}/ssl/openssl-swtpm.cnf
 
 %files libs
 %license LICENSE
@@ -175,6 +184,10 @@ fi
 %{_datadir}/swtpm/swtpm-create-tpmca
 
 %changelog
+* Mon Jul 08 2024 Marc-André Lureau <marcandre.lureau@redhat.com> - 0.8.0-2
+- Fix SHA-1 algorithm availability
+  Resolves: RHEL-46788
+
 * Tue Nov 22 2022 Marc-André Lureau <marcandre.lureau@redhat.com> - 0.8.0-1
 - Update to v0.8.0 release
   Resolves: rhbz#2092944

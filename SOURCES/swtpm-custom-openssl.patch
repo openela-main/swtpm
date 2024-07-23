@@ -1,0 +1,12 @@
+Binary files swtpm-0.9.0/.git/index and swtpm-0.9.0.new/.git/index differ
+diff -rup swtpm-0.9.0/src/swtpm/main.c swtpm-0.9.0.new/src/swtpm/main.c
+--- swtpm-0.9.0/src/swtpm/main.c	2024-07-08 09:34:00.488080859 +0100
++++ swtpm-0.9.0.new/src/swtpm/main.c	2024-07-08 09:33:40.057884795 +0100
+@@ -70,6 +70,7 @@ int main(int argc, char **argv)
+         fprintf(stderr, "Missing TPM interface type.\n");
+         return 1;
+     }
++    setenv("OPENSSL_CONF", "/etc/ssl/openssl-swtpm.cnf", 1);
+     if (!strcmp(argv[1], "socket")) {
+         return swtpm_main(argc-1, &argv[1], argv[0], "socket");
+ #ifdef WITH_CHARDEV
