@@ -1,0 +1,72 @@
+From 816c9ef66eaec230f9dd89e1deebfadc7359aa60 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Marc-Andr=C3=A9=20Lureau?= <marcandre.lureau@redhat.com>
+Date: Sat, 13 Jul 2024 13:37:29 +0400
+Subject: [PATCH] selinux
+
+---
+ src/selinux/swtpm.te       | 12 +++++++++++-
+ src/selinux/swtpm_svirt.te |  4 ++++
+ 2 files changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/src/selinux/swtpm.te b/src/selinux/swtpm.te
+index 2327721..c35056e 100644
+--- a/src/selinux/swtpm.te
++++ b/src/selinux/swtpm.te
+@@ -11,6 +11,8 @@ require {
+ 	type virt_var_lib_t;
+ 	type virtqemud_t;
+ 	type virtqemud_tmp_t;
++        class file map;
++        tunable virt_use_nfs;
+ }
+ 
+ attribute_role swtpm_roles;
+@@ -30,10 +32,11 @@ allow swtpm_t qemu_var_run_t:dir { add_name remove_name write };
+ allow swtpm_t qemu_var_run_t:sock_file { create setattr unlink };
+ allow swtpm_t var_log_t:file open;
+ allow swtpm_t virt_var_lib_t:dir { add_name remove_name write };
+-allow swtpm_t virt_var_lib_t:file { create rename setattr unlink write };
++allow swtpm_t virt_var_lib_t:file { create rename setattr unlink write map };
+ allow swtpm_t virtqemud_t:unix_stream_socket { read write getattr };
+ allow swtpm_t virtqemud_tmp_t:file { open write };
+ 
++virt_read_log(swtpm_t)
+ 
+ domain_use_interactive_fds(swtpm_t)
+ 
+@@ -42,3 +45,10 @@ files_read_etc_files(swtpm_t)
+ auth_use_nsswitch(swtpm_t)
+ 
+ miscfiles_read_localization(swtpm_t)
++
++tunable_policy(`virt_use_nfs',`
++    fs_manage_nfs_dirs(swtpm_t)
++    fs_manage_nfs_files(swtpm_t)
++    fs_read_nfs_symlinks(swtpm_t)
++    fs_mmap_nfs_files(swtpm_t)
++')
+diff --git a/src/selinux/swtpm_svirt.te b/src/selinux/swtpm_svirt.te
+index f7b886c..424efa7 100644
+--- a/src/selinux/swtpm_svirt.te
++++ b/src/selinux/swtpm_svirt.te
+@@ -13,6 +13,7 @@ require {
+ 	type user_tmp_t;
+ 	type virtd_t;
+ 	type virtqemud_t;
++	type virt_var_run_t;
+ }
+ 
+ swtpm_domtrans(svirt_t)
+@@ -27,6 +28,9 @@ allow svirt_t user_tmp_t:sock_file { create setattr unlink };
+ allow svirt_t virtd_t:dir search;
+ allow svirt_t virtd_t:fifo_file write;
+ allow svirt_t virtqemud_t:fifo_file write;
++allow svirt_t virt_var_run_t:dir { write add_name remove_name };
++allow svirt_t virt_var_run_t:file { create write setattr unlink };
++allow svirt_t virt_var_run_t:sock_file { create write setattr unlink };
+ 
+ # For virt-install (see https://bugzilla.redhat.com/show_bug.cgi?id=2283878 )
+ allow svirt_tcg_t user_tmp_t:sock_file { create setattr unlink };
+-- 
+2.47.0
+
