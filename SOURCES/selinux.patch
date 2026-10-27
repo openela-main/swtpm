@@ -17,7 +17,7 @@ index 2327721..c35056e 100644
  	type virtqemud_t;
  	type virtqemud_tmp_t;
 +        class file map;
-+        tunable virt_use_nfs;
++        bool virt_use_nfs;
  }
  
  attribute_role swtpm_roles;

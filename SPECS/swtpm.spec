@@ -8,7 +8,7 @@
 Summary: TPM Emulator
 Name:           swtpm
 Version:        0.9.0
-Release:        5%{?dist}
+Release:        6%{?dist}
 License:        BSD-3-Clause
 Url:            https://github.com/stefanberger/swtpm
 Source0:        https://github.com/stefanberger/swtpm/archive/v%{version}/%{name}-%{version}.tar.gz
@@ -202,6 +202,10 @@ fi
 %{_datadir}/swtpm/swtpm-create-tpmca
 
 %changelog
+* Wed Jul 15 2026 Marc-André Lureau <marcandre.lureau@redhat.com> - 0.9.0-6
+- Fix SELinux policy: use bool instead of tunable for virt_use_nfs
+  Resolves: RHEL-210889
+
 * Tue Jan 14 2025 Marc-André Lureau <marcandre.lureau@redhat.com> - 0.9.0-5
 - Add extra SELinux policies.
   https://github.com/stefanberger/swtpm/issues/970
